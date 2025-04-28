@@ -19,6 +19,9 @@
 #include <camera_info_manager/camera_info_manager.hpp>
 
 #include "galaxy_camera_u3v/visibility_control.h"
+#include "cv_bridge/cv_bridge.h"
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/highgui/highgui.hpp>
 
 using namespace std::chrono_literals;
 
@@ -38,7 +41,7 @@ public:
   : Node("u3v_image_pub", rclcpp::NodeOptions(options).use_intra_process_comms(true)),
   // : Node("u3v_image_pub", options),
 
-  camera_info_url_("package://galaxy_camera_u3v/camera_info/${NAME}.yaml")
+  camera_info_url_("package://galaxy_camera_u3v/camera_info/mer2_630_60u3c.yaml")
   {
     // this flag is used control if certain parameters can be updated
     is_initialising_ = true;
@@ -91,9 +94,9 @@ public:
 
     GX_OPEN_PARAM gx_open_param;
     gx_open_param.accessMode = GX_ACCESS_EXCLUSIVE;
-    gx_open_param.openMode = GX_OPEN_SN;
+    gx_open_param.openMode = GX_OPEN_INDEX;
     std::vector<char> device_sn_cstr (device_sn_.c_str(), device_sn_.c_str() + device_sn_.size()+1);
-    gx_open_param.pszContent = device_sn_cstr.data();
+    gx_open_param.pszContent = "1";
     status = GXOpenDevice(&gx_open_param, &this->gx_dev_handle_);
     if (status != GX_STATUS_SUCCESS) {
       auto error_msg = GetErrorString(status);
@@ -109,8 +112,8 @@ public:
     //   RCLCPP_ERROR(this->get_logger(), "error getting payload_size_: %s", error_msg);
     //   exit (-7);
     // }
-    this->declare_parameter<int64_t>("pixel_format", GX_PIXEL_FORMAT_BAYER_RG10);
-    // this->declare_parameter<int64_t>("pixel_format", GX_PIXEL_FORMAT_BAYER_RG8);
+    // this->declare_parameter<int64_t>("pixel_format", GX_PIXEL_FORMAT_BAYER_RG10);
+    this->declare_parameter<int64_t>("pixel_format", GX_PIXEL_FORMAT_BAYER_RG8);
 
     CameraDeviceInfo camera_info;
     status = GetCameraInfo(gx_dev_handle_, &camera_info);
@@ -171,10 +174,11 @@ public:
     // }
 
     // iamge encoding to publish
-    this->declare_parameter<std::string>("image_encoding", "RGB8");
+    this->declare_parameter<std::string>("image_encoding", "BGR8");
 
     // camera parameters - these are the default values. Values will be set on the camera if appropriate
     this->declare_parameter<int64_t>("acquisition_mode", GX_ACQ_MODE_CONTINUOUS);
+    this->declare_parameter<int64_t>("trigger_mode",GX_TRIGGER_MODE_OFF);
     // leader send the trigger out on line2 for the followers (hard wired)
     if (acquisition_role_.compare("leader") == 0) {
       this->declare_parameter<int64_t>("trigger_mode",GX_TRIGGER_MODE_OFF);
@@ -190,12 +194,12 @@ public:
       this->declare_parameter<int64_t>("line_selector", GX_ENUM_LINE_SELECTOR_LINE3);
       this->declare_parameter<int64_t>("line_mode", GX_ENUM_LINE_MODE_INPUT);
     }
-    this->declare_parameter<double_t>("auto_exposure_time_min", 20.0); // microseconds
-    this->declare_parameter<double_t>("auto_exposure_time_max", 1000000.0); //microseconds
+    this->declare_parameter<double_t>("auto_exposure_time_min", 8.0); // microseconds
+    this->declare_parameter<double_t>("auto_exposure_time_max", 5000.0); //microseconds
     this->declare_parameter<int64_t>("exposure_auto", GX_EXPOSURE_AUTO_CONTINUOUS);
     this->declare_parameter<int64_t>("exposure_mode", GX_EXPOSURE_MODE_TIMED);
-    this->declare_parameter<double_t>("exposure_time", 100000.0);
-    this->declare_parameter<int64_t>("expected_gray_value", 120);
+    // this->declare_parameter<double_t>("exposure_time", 5000.0);
+    this->declare_parameter<int64_t>("expected_gray_value", 70);
     this->declare_parameter<double_t>("current_acquisition_frame_rate",0.0);
     this->declare_parameter<double_t>("gain",0.0); // read only - gets updated periodically
     this->declare_parameter<int64_t>("gain_auto", GX_GAIN_AUTO_CONTINUOUS);
@@ -205,17 +209,19 @@ public:
     this->declare_parameter<int64_t>("balance_ratio_selector", GX_BALANCE_RATIO_SELECTOR_RED);
     this->declare_parameter<double_t>("balance_ratio",1.0); // read only when continuous - gets updated periodically
     this->declare_parameter<int64_t>("balance_white_auto", GX_BALANCE_WHITE_AUTO_CONTINUOUS);
-    int roi_width=1024;
-    int roi_height=768;
+    this->declare_parameter<bool>("gamma_enable", true);
+    this->declare_parameter<int64_t>("gamma_mode", GX_GAMMA_SELECTOR_SRGB);
+    int roi_width=3088;
+    int roi_height=2064;
     this->declare_parameter<int64_t>("awb_roi_width", roi_width);
     this->declare_parameter<int64_t>("awb_roi_height", roi_height);
-    this->declare_parameter<int64_t>("awb_roi_offset_x", int16_t(2048/2 - (roi_width/2)));
-    this->declare_parameter<int64_t>("awb_roi_offset_y", int16_t(1536/2 - (roi_height/2)));
+    this->declare_parameter<int64_t>("awb_roi_offset_x", 0); // int16_t(2048/2 - (roi_width/2))
+    this->declare_parameter<int64_t>("awb_roi_offset_y", 0); // int16_t(1536/2 - (roi_height/2))
     this->declare_parameter<int64_t>("awb_lamp_house", GX_AWB_LAMP_HOUSE_ADAPTIVE);
 
     this->declare_parameter<int64_t>("acquisition_frame_rate_mode",GX_ACQUISITION_FRAME_RATE_MODE_ON);
     // this->declare_parameter<double_t>("acquisition_frame_rate", 56.0);
-    this->declare_parameter<double_t>("acquisition_frame_rate", 30.0);
+    this->declare_parameter<double_t>("acquisition_frame_rate", 10.0);
 
 
     status = GXStreamOn(gx_dev_handle_);
@@ -229,7 +235,8 @@ public:
     this->image_buf_ = new u_char[this->payload_size_];
 
     // publishers
-    pub_ = image_transport::create_camera_publisher(this, topic_+"/image_raw", qos.get_rmw_qos_profile());
+    pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", 10);
+    pub_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("camera_info", 10);
 
     // initialise are start the timer to work out the frames per second)
     auto start_time = std::chrono::steady_clock::now();
@@ -269,6 +276,8 @@ public:
 
 private:
   bool is_initialising_;
+  double last_record = 0;
+  int rec_fps = 4;
 
   std::string acquisition_role_; // camera maybe a leader or a follower
 
@@ -284,7 +293,8 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::TimeReference>::SharedPtr capture_trigger_sub_;
 
   // ros2 camera
-  image_transport::CameraPublisher pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_;
+  rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_info_;
 
   std::string topic_;
 
@@ -393,10 +403,10 @@ private:
           parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
           result = param_gx_set_enum(GX_ENUM_EXPOSURE_MODE, parameter.as_int());
       }
-      else if (parameter.get_name() == "exposure_time" &&
-          parameter.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
-          result = param_gx_set_float(GX_FLOAT_EXPOSURE_TIME, parameter.as_double());
-      }
+      // else if (parameter.get_name() == "exposure_time" &&
+      //     parameter.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+      //     result = param_gx_set_float(GX_FLOAT_EXPOSURE_TIME, parameter.as_double());
+      // }
       else if (parameter.get_name() == "exposure_auto" &&
           parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
           result = param_gx_set_enum(GX_ENUM_EXPOSURE_AUTO, parameter.as_int());
@@ -449,10 +459,10 @@ private:
           parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
           result = param_gx_set_enum(GX_ENUM_BALANCE_WHITE_AUTO, parameter.as_int());
       }
-      else if (parameter.get_name() == "awb_lamp_house" &&
-          parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
-          result = param_gx_set_enum(GX_ENUM_AWB_LAMP_HOUSE, parameter.as_int());
-      }
+      // else if (parameter.get_name() == "awb_lamp_house" &&
+      //     parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+      //     result = param_gx_set_enum(GX_ENUM_AWB_LAMP_HOUSE, parameter.as_int());
+      // }
       else if (parameter.get_name() == "awb_roi_width" &&
           parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
           result = param_gx_set_int(GX_INT_AWBROI_WIDTH, parameter.as_int());
@@ -461,14 +471,14 @@ private:
           parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
           result = param_gx_set_int(GX_INT_AWBROI_HEIGHT, parameter.as_int());
       }
-      else if (parameter.get_name() == "awb_roi_offset_x" &&
-          parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
-          result = param_gx_set_int(GX_INT_AWBROI_OFFSETX, parameter.as_int());
-      }
-      else if (parameter.get_name() == "awb_roi_offset_y" &&
-          parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
-          result = param_gx_set_int(GX_INT_AWBROI_OFFSETY, parameter.as_int());
-      }
+      // else if (parameter.get_name() == "awb_roi_offset_x" &&
+      //     parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+      //     result = param_gx_set_int(GX_INT_AWBROI_OFFSETX, parameter.as_int());
+      // }
+      // else if (parameter.get_name() == "awb_roi_offset_y" &&
+      //     parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+      //     result = param_gx_set_int(GX_INT_AWBROI_OFFSETY, parameter.as_int());
+      // }
 
       if (!result.successful) {
         RCLCPP_WARN(this->get_logger(), "parameter %s not set - %s",parameter.get_name().c_str(), result.reason.c_str());
@@ -545,7 +555,7 @@ private:
     update_changed_enum_param("acquisition_mode", GX_ENUM_ACQUISITION_MODE);
     update_changed_enum_param("trigger_mode", GX_ENUM_TRIGGER_MODE);
     update_changed_enum_param("exposure_mode", GX_ENUM_EXPOSURE_MODE);
-    update_changed_float_param("exposure_time", GX_FLOAT_EXPOSURE_TIME);
+    // update_changed_float_param("exposure_time", GX_FLOAT_EXPOSURE_TIME);
     update_changed_enum_param("exposure_auto", GX_ENUM_EXPOSURE_AUTO);
     update_changed_float_param("auto_exposure_time_min", GX_FLOAT_AUTO_EXPOSURE_TIME_MIN);
     update_changed_float_param("auto_exposure_time_max", GX_FLOAT_AUTO_EXPOSURE_TIME_MAX);
@@ -561,6 +571,9 @@ private:
     update_changed_float_param("balance_ratio", GX_FLOAT_BALANCE_RATIO);
     update_changed_enum_param("balance_white_auto", GX_ENUM_BALANCE_WHITE_AUTO);
     update_changed_enum_param("awb_lamp_house", GX_ENUM_AWB_LAMP_HOUSE);
+    update_changed_bool_param("gamma_enable", GX_BOOL_GAMMA_ENABLE);
+    update_changed_enum_param("gamma_mode", GX_ENUM_GAMMA_MODE);
+    // update_changed_enum_param("saturation_mode", GX_ENUM_BALANCE_WHITE_AUTO);
   }
 
   CAMERA_LOCAL
@@ -573,6 +586,25 @@ private:
       int64_t p_value = param.as_int();
       int64_t gx_value = 0;
       status = GXGetEnum(gx_dev_handle_, feature_id, &gx_value);
+      if (status == GX_STATUS_SUCCESS && p_value != gx_value) {
+        // RCLCPP_INFO(get_logger(),"update_changed_enum_param %s %d p %ld gx %ld", param_name.c_str(), feature_id, p_value, gx_value );
+        auto updated_param = rclcpp::Parameter(param_name, gx_value);
+        this->set_parameter(updated_param);
+      }
+    }
+  }
+
+  CAMERA_LOCAL
+  void update_changed_bool_param(std::string param_name, GX_FEATURE_ID_CMD feature_id) {
+    auto param = this->get_parameter(param_name);
+    GX_STATUS status = GX_STATUS_SUCCESS;
+    bool is_readable = false;
+    status = GXIsReadable(gx_dev_handle_, feature_id, &is_readable);
+    if (status == GX_STATUS_SUCCESS && is_readable){
+      bool p_value = param.as_bool();
+      bool gx_value = true;
+      status = GXGetBool(gx_dev_handle_, feature_id, &gx_value);
+      GXSetBool(gx_dev_handle_, feature_id, true);
       if (status == GX_STATUS_SUCCESS && p_value != gx_value) {
         // RCLCPP_INFO(get_logger(),"update_changed_enum_param %s %d p %ld gx %ld", param_name.c_str(), feature_id, p_value, gx_value );
         auto updated_param = rclcpp::Parameter(param_name, gx_value);
@@ -718,9 +750,17 @@ private:
       RCLCPP_DEBUG(get_logger(), "%s handle %p capture frame_id: %ld timestamp: %lu.%.10lu", topic.c_str(), gx_dev_handle, frame_buffer->nFrameID, uint64_t(stamp.seconds()),stamp.nanoseconds());
 
       // Initialize a shared pointer to an Image message.
-      auto msg = std::make_unique<sensor_msgs::msg::Image>();
+      auto msg = std::make_shared<sensor_msgs::msg::Image>();
       // msg->header.stamp = stamp + rclcpp::Duration(0,get_parameter("exposure_time").as_double()*1000);
       msg->header.stamp = rclcpp::Clock().now();
+      double unix_timestamp = msg->header.stamp.sec + msg->header.stamp.nanosec / 1e9;
+      double now_nanosec = msg->header.stamp.sec * 1e9 + msg->header.stamp.nanosec;
+      std::time_t time_t_timestamp = static_cast<std::time_t>(unix_timestamp);
+      double fractional_seconds = unix_timestamp - static_cast<double>(time_t_timestamp);
+      std::ostringstream timestamp_stream;
+      timestamp_stream << std::put_time(std::localtime(&time_t_timestamp), "%Y-%m-%d_%H_%M_%S");
+      int milliseconds = static_cast<int>(fractional_seconds * 1000);
+      timestamp_stream << "." << std::setfill('0') << std::setw(3) << milliseconds;
       if (!trigger_source_.empty()) {
         msg->header.frame_id = trigger_source_;
       } else {
@@ -736,6 +776,14 @@ private:
 
         size_t msg_size = frame_buffer->nHeight * frame_buffer->nWidth * 3;
         msg->encoding = sensor_msgs::image_encodings::RGB8;
+        msg->step = frame_buffer->nWidth*3;
+        msg->data.resize(msg_size);
+        memcpy(&msg->data[0],RGB_image_buf,msg_size);
+      } else if (image_encoding_ == "BGR8") {
+        // convert image to BGR8
+        PixelFormatConvert(frame_buffer, GX_COLOR_FILTER_BAYER_BG, RGB_image_buf);
+        size_t msg_size = frame_buffer->nHeight * frame_buffer->nWidth * 3;
+        msg->encoding = sensor_msgs::image_encodings::BGR8;
         msg->step = frame_buffer->nWidth*3;
         msg->data.resize(msg_size);
         memcpy(&msg->data[0],RGB_image_buf,msg_size);
@@ -765,11 +813,8 @@ private:
         return;
       }
       frame_count_++;
-      // auto msg_stamp = msg->header.stamp;
-      // RCLCPP_INFO(get_logger(), "trigger_timestamp: %ld msg->header.stamp: %d.%d",
-      //     trigger_timestamp_.nanoseconds(),
-      //     msg_stamp.sec, msg_stamp.nanosec);
-      pub_.publish(*std::move(msg),camera_info_);
+      pub_->publish(*std::move(msg));
+      pub_info_->publish(camera_info_);
     }
 
     status = GXQBuf(gx_dev_handle, frame_buffer);
