@@ -199,7 +199,7 @@ public:
     this->declare_parameter<int64_t>("exposure_auto", GX_EXPOSURE_AUTO_CONTINUOUS);
     this->declare_parameter<int64_t>("exposure_mode", GX_EXPOSURE_MODE_TIMED);
     // this->declare_parameter<double_t>("exposure_time", 5000.0);
-    this->declare_parameter<int64_t>("expected_gray_value", 70);
+    this->declare_parameter<int64_t>("expected_gray_value", 30);
     this->declare_parameter<double_t>("current_acquisition_frame_rate",0.0);
     this->declare_parameter<double_t>("gain",0.0); // read only - gets updated periodically
     this->declare_parameter<int64_t>("gain_auto", GX_GAIN_AUTO_CONTINUOUS);
