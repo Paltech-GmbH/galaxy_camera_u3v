@@ -15,7 +15,7 @@ def generate_launch_description():
     )
     """Generate launch description with multiple components."""
     camera_params = [
-        {"acquisition_frame_rate": 10.0},
+        {"acquisition_frame_rate": 7.0},
         {"topic": ""},
         {"device_sn": "FCQ24082064"},
     ]

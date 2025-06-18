@@ -754,7 +754,9 @@ private:
       // msg->header.stamp = stamp + rclcpp::Duration(0,get_parameter("exposure_time").as_double()*1000);
       msg->header.stamp = rclcpp::Clock().now();
       double unix_timestamp = msg->header.stamp.sec + msg->header.stamp.nanosec / 1e9;
-      double now_nanosec = msg->header.stamp.sec * 1e9 + msg->header.stamp.nanosec;
+      double now_nanosec = (msg->header.stamp.sec * 1e9 + msg->header.stamp.nanosec) - 70000000;
+      msg->header.stamp.sec = static_cast<int32_t>(now_nanosec / 1e9);
+      msg->header.stamp.nanosec = static_cast<uint32_t>(fmod(now_nanosec, 1e9));
       std::time_t time_t_timestamp = static_cast<std::time_t>(unix_timestamp);
       double fractional_seconds = unix_timestamp - static_cast<double>(time_t_timestamp);
       std::ostringstream timestamp_stream;
