@@ -48,6 +48,7 @@ public:
 
     auto qos = rclcpp::SensorDataQoS();
     qos.reliable();
+    auto sensor_qos = rclcpp::SensorDataQoS();
 
     // ros2 parameter call backs
     parameters_callback_handle_ = this->add_on_set_parameters_callback(std::bind(&U3vImagePub::on_set_parameters_callback, this, std::placeholders::_1));
@@ -235,7 +236,7 @@ public:
     this->image_buf_ = new u_char[this->payload_size_];
 
     // publishers
-    pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", 10);
+    pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", sensor_qos);
     pub_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("camera_info", 10);
 
     // initialise are start the timer to work out the frames per second)
