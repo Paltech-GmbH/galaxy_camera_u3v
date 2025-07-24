@@ -31,6 +31,8 @@ include_directories(include SYSTEM)
 
 add_library(camera_components SHARED
   src/u3v_image_pub.cpp
+  src/trigger_image_mono.cpp
+  src/trigger_image_color.cpp
   src/capture_trigger.cpp
   src/stereo_image_viz.cpp
   # src/calibration_stereo_image_capture.cpp
@@ -57,6 +59,8 @@ target_link_libraries(camera_components
 )
 
 rclcpp_components_register_node(camera_components PLUGIN "camera::U3vImagePub" EXECUTABLE u3v_image_pub)
+rclcpp_components_register_node(camera_components PLUGIN "camera::TriggerImageMono" EXECUTABLE trigger_image_mono)
+rclcpp_components_register_node(camera_components PLUGIN "camera::TriggerImageColor" EXECUTABLE trigger_image_color)
 rclcpp_components_register_node(camera_components PLUGIN "camera::CaptureTrigger" EXECUTABLE capture_trigger)
 rclcpp_components_register_node(camera_components PLUGIN "camera::StereoImageViz" EXECUTABLE stereo_image_viz)
 rclcpp_components_register_node(camera_components PLUGIN "camera::CalibStereoImageCap" EXECUTABLE calib_stereo_image_cap)

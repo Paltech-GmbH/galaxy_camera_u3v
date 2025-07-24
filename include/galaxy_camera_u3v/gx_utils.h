@@ -19,7 +19,7 @@
 
 #include <string>
 
-uint8_t bit_extract(uint16_t value, int begin, int end)
+inline uint8_t bit_extract(uint16_t value, int begin, int end)
 {
     uint16_t mask = (1 << (end - begin)) - 1;
     return static_cast<uint8_t>((value >> begin) & mask);
@@ -319,7 +319,7 @@ inline const char* GetErrorString(GX_STATUS emErrorStatus)
     return error_string;
 }
 
-std::string string_thread_id()
+inline std::string string_thread_id()
 {
   auto hashed = std::hash<std::thread::id>()(std::this_thread::get_id());
   return std::to_string(hashed);
