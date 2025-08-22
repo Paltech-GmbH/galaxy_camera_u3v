@@ -6,6 +6,7 @@ from launch_ros.actions import LoadComposableNodes
 from launch_ros.descriptions import ComposableNode
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -17,25 +18,15 @@ def generate_launch_description():
     camera_params = [
         {"acquisition_frame_rate": 7.0},
         {"topic": ""},
-        {"device_sn": "FCQ24082064"},
+        {"device_sn": "FCQ24082069"},
     ]
 
-    container1 = ComposableNodeContainer(
-        name="stereo_image_container",
+    front_camera_node = Node(
+        package="galaxy_camera_u3v",
+        executable="u3v_image_pub",
+        name="front_camera_pub",
         namespace=PythonExpression(expression=["'", namespace, "'", " + '/cam_front'"]),
-        package="rclcpp_components",
-        executable="component_container_mt",
-        composable_node_descriptions=[
-            ComposableNode(
-                package="galaxy_camera_u3v",
-                plugin="camera::U3vImagePub",
-                name="right_image_pub",
-                namespace=PythonExpression(
-                    expression=["'", namespace, "'", " + '/cam_front'"]
-                ),
-                parameters=camera_params,
-            )
-        ],
+        parameters=camera_params,
     )
 
-    return launch.LaunchDescription([declare_namespace_cmd, container1])
+    return launch.LaunchDescription([declare_namespace_cmd, front_camera_node])
