@@ -484,7 +484,7 @@ private:
       if (!result.successful) {
         RCLCPP_WARN(this->get_logger(), "parameter %s not set - %s",parameter.get_name().c_str(), result.reason.c_str());
       } else {
-        RCLCPP_INFO(this->get_logger(), "parameter set %s: %s", parameter.get_name().c_str(), parameter.value_to_string().c_str());
+        RCLCPP_DEBUG(this->get_logger(), "parameter set %s: %s", parameter.get_name().c_str(), parameter.value_to_string().c_str());
       }
     }
     return result;
@@ -658,7 +658,7 @@ private:
 
     auto fps = frame_count/(std::chrono::duration_cast<std::chrono::milliseconds>(end_time-frame_time).count()/1000.0);
 
-    RCLCPP_INFO(this->get_logger(), "fps: %f", fps);
+    RCLCPP_DEBUG(this->get_logger(), "fps: %f", fps);
   }
 
   // CAMERA_LOCAL
