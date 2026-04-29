@@ -95,9 +95,9 @@ public:
 
     GX_OPEN_PARAM gx_open_param;
     gx_open_param.accessMode = GX_ACCESS_EXCLUSIVE;
-    gx_open_param.openMode = GX_OPEN_INDEX;
+    gx_open_param.openMode = GX_OPEN_SN;
     std::vector<char> device_sn_cstr (device_sn_.c_str(), device_sn_.c_str() + device_sn_.size()+1);
-    gx_open_param.pszContent = "1";
+    gx_open_param.pszContent = device_sn_cstr.data();
     status = GXOpenDevice(&gx_open_param, &this->gx_dev_handle_);
     if (status != GX_STATUS_SUCCESS) {
       auto error_msg = GetErrorString(status);

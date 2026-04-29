@@ -15,18 +15,34 @@ def generate_launch_description():
         "namespace", default_value="", description="Top-level namespace"
     )
     """Generate launch description with multiple components."""
-    camera_params = [
-        {"acquisition_frame_rate": 5.0},
-        {"topic": ""},
-        {"device_sn": "FCQ24082069"},
-    ]
-
-    front_camera_node = Node(
+    left_camera_node = Node(
         package="galaxy_camera_u3v",
         executable="u3v_image_pub",
-        name="front_camera_pub",
-        namespace=PythonExpression(expression=["'", namespace, "'", " + '/cam_front'"]),
-        parameters=camera_params,
+        name="left_camera_pub",
+        namespace=PythonExpression(
+            expression=["'", namespace, "'", " + '/cam_front_left'"]
+        ),
+        parameters=[
+            {"acquisition_frame_rate": 3.0},
+            {"topic": ""},
+            {"device_sn": "FCQ24082069"},
+        ],
     )
 
-    return launch.LaunchDescription([declare_namespace_cmd, front_camera_node])
+    right_camera_node = Node(
+        package="galaxy_camera_u3v",
+        executable="u3v_image_pub",
+        name="right_camera_pub",
+        namespace=PythonExpression(
+            expression=["'", namespace, "'", " + '/cam_front_right'"]
+        ),
+        parameters=[
+            {"acquisition_frame_rate": 3.0},
+            {"topic": ""},
+            {"device_sn": "FCQ24102860"},
+        ],
+    )
+
+    return launch.LaunchDescription(
+        [declare_namespace_cmd, left_camera_node, right_camera_node]
+    )
