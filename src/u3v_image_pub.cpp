@@ -236,7 +236,7 @@ public:
     this->image_buf_ = new u_char[this->payload_size_];
 
     // publishers
-    pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", sensor_qos);
+    pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", 10);
     pub_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("camera_info", 10);
 
     // initialise are start the timer to work out the frames per second)
