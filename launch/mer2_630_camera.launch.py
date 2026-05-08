@@ -20,7 +20,7 @@ def generate_launch_description():
         executable="u3v_image_pub",
         name="left_camera_pub",
         namespace=PythonExpression(
-            expression=["'", namespace, "'", " + '/cam_front_left'"]
+            expression=["'", namespace, "'", " + '/front/left/camera_sensor'"]
         ),
         parameters=[
             {"acquisition_frame_rate": 3.0},
@@ -34,7 +34,7 @@ def generate_launch_description():
         executable="u3v_image_pub",
         name="right_camera_pub",
         namespace=PythonExpression(
-            expression=["'", namespace, "'", " + '/cam_front_right'"]
+            expression=["'", namespace, "'", " + '/front/right/camera_sensor'"]
         ),
         parameters=[
             {"acquisition_frame_rate": 3.0},
