@@ -18,9 +18,9 @@ def generate_launch_description():
     left_camera_node = Node(
         package="galaxy_camera_u3v",
         executable="u3v_image_pub",
-        name="left_camera_pub",
+        name="galaxy_camera_pub",
         namespace=PythonExpression(
-            expression=["'", namespace, "'", " + '/front/left/camera_sensor'"]
+            expression=["'", namespace, "'", " + '/front_left/sensors/camera'"]
         ),
         parameters=[
             {"acquisition_frame_rate": 3.0},
@@ -32,9 +32,9 @@ def generate_launch_description():
     right_camera_node = Node(
         package="galaxy_camera_u3v",
         executable="u3v_image_pub",
-        name="right_camera_pub",
+        name="galaxy_camera_pub",
         namespace=PythonExpression(
-            expression=["'", namespace, "'", " + '/front/right/camera_sensor'"]
+            expression=["'", namespace, "'", " + '/front_right/sensors/camera'"]
         ),
         parameters=[
             {"acquisition_frame_rate": 3.0},
