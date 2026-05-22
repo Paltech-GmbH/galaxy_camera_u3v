@@ -73,7 +73,7 @@ install(TARGETS
   RUNTIME DESTINATION bin)
 
 install(
-  DIRECTORY launch camera_info
+  DIRECTORY launch camera_info params
   DESTINATION share/${PROJECT_NAME}
 )
 
