@@ -1,5 +1,7 @@
 #include <chrono>
 #include <ctime>
+#include <atomic>
+#include <thread>
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
@@ -76,6 +78,7 @@ public:
       RCLCPP_ERROR(this->get_logger(), "GXInitLib failed ... ");
       exit (-1);
     }
+    lib_initialised_ = true;
 
     // Get device enumerated number - should be at least 1
     status = GXUpdateDeviceList(&num_devices, 1000);
@@ -93,15 +96,11 @@ public:
     device_sn_ = this->declare_parameter<std::string>("device_sn","FDS20110008");
     RCLCPP_INFO(this->get_logger(),"parameter device_sn_: %s", device_sn_.c_str());
 
-    GX_OPEN_PARAM gx_open_param;
-    gx_open_param.accessMode = GX_ACCESS_EXCLUSIVE;
-    gx_open_param.openMode = GX_OPEN_INDEX;
-    std::vector<char> device_sn_cstr (device_sn_.c_str(), device_sn_.c_str() + device_sn_.size()+1);
-    gx_open_param.pszContent = "1";
-    status = GXOpenDevice(&gx_open_param, &this->gx_dev_handle_);
+    // open the camera (single daheng camera - open by index, as per original)
+    status = open_device();
     if (status != GX_STATUS_SUCCESS) {
       auto error_msg = GetErrorString(status);
-      RCLCPP_ERROR(this->get_logger(), "error opening sn: %s camera: %s", gx_open_param.pszContent, error_msg);
+      RCLCPP_ERROR(this->get_logger(), "error opening camera: %s", error_msg);
       exit (-5);
     }
     RCLCPP_DEBUG(this->get_logger(), "gx_dev_handle_0: %p", gx_dev_handle_);
@@ -165,6 +164,9 @@ public:
       image_format.offset_x, image_format.offset_y
     );
 
+    // remember the sensor dimensions so reinit can resize buffers consistently
+    sensor_width_ = image_format.sensor_width;
+    sensor_height_ = image_format.sensor_height;
 
     // not implemented on test device
     // status = GXSetEnum(this->gx_dev_handle_, GX_ENUM_DEAD_PIXEL_CORRECT, GX_DEAD_PIXEL_CORRECT_ON);
@@ -224,6 +226,11 @@ public:
     // this->declare_parameter<double_t>("acquisition_frame_rate", 56.0);
     this->declare_parameter<double_t>("acquisition_frame_rate", 10.0);
 
+    // health-check tuning: how low the *measured* fps may fall before we declare
+    // the camera dead and reinitialise. Default 1.0 fps as requested.
+    this->declare_parameter<double_t>("min_healthy_fps", 1.0);
+    // number of consecutive 1-second health windows below threshold before reinit
+    this->declare_parameter<int64_t>("unhealthy_windows_before_reinit", 2);
 
     status = GXStreamOn(gx_dev_handle_);
     if (status != GX_STATUS_SUCCESS) {
@@ -231,8 +238,13 @@ public:
       RCLCPP_ERROR(this->get_logger(), "error stream on (%s): %s", device_sn_.c_str(), error_msg);
       exit (-8);
     }
+    streaming_ = true;
+
+    // register an offline callback for fast disconnect detection
+    register_offline_callback();
+
     // setup c style buffers for the camera
-    this->RGB_image_buf_ = new u_char[image_format.sensor_height * image_format.sensor_width * 3];
+    this->RGB_image_buf_ = new u_char[sensor_height_ * sensor_width_ * 3];
     this->image_buf_ = new u_char[this->payload_size_];
 
     // publishers
@@ -250,6 +262,10 @@ public:
     callback_group_capture_timer_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
     capture_timer_ = this->create_wall_timer(10ms, std::bind(&U3vImagePub::capture_timer_callback, this), callback_group_capture_timer_);
 
+    // dedicated callback group + timer for reinitialisation so it never runs
+    // re-entrantly with capture and never blocks other callbacks
+    callback_group_reinit_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
     // just use for testing - trigger should come from the controller
     // auto frame_duration = 1000000us/FRAME_RATE;
     // trigger_timer_ = this->create_wall_timer(frame_duration, std::bind(&U3vImagePub::trigger_timer_callback, this));
@@ -264,13 +280,19 @@ public:
 
     if (this->gx_dev_handle_ != NULL) {
       RCLCPP_INFO(this->get_logger(), "closing gx_dev_handle_");
+      unregister_offline_callback();
       GXStreamOff(this->gx_dev_handle_);
       GXCloseDevice(this->gx_dev_handle_);
+      gx_dev_handle_ = NULL;
     }
-    GXCloseLib();
+    if (lib_initialised_) {
+      GXCloseLib();
+    }
 
     if (RGB_image_buf_ != NULL)
       delete[] RGB_image_buf_;
+    if (image_buf_ != NULL)
+      delete[] image_buf_;
 
     RCLCPP_INFO(this->get_logger(),"finished");
   }
@@ -283,6 +305,7 @@ private:
   std::string acquisition_role_; // camera maybe a leader or a follower
 
   rclcpp::CallbackGroup::SharedPtr callback_group_capture_timer_;
+  rclcpp::CallbackGroup::SharedPtr callback_group_reinit_;
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameters_callback_handle_;
   rclcpp::TimerBase::SharedPtr frame_timer_;
@@ -290,6 +313,7 @@ private:
   // rclcpp::TimerBase::SharedPtr trigger_timer_;
   rclcpp::TimerBase::SharedPtr info_timer_;
   rclcpp::TimerBase::SharedPtr capture_timer_;
+  rclcpp::TimerBase::SharedPtr reinit_timer_;
 
   rclcpp::Subscription<sensor_msgs::msg::TimeReference>::SharedPtr capture_trigger_sub_;
 
@@ -308,18 +332,68 @@ private:
   std::string device_sn_;
   rclcpp::Time trigger_timestamp_;
   std::string trigger_source_;
-  GX_DEV_HANDLE gx_dev_handle_;
+  GX_DEV_HANDLE gx_dev_handle_ = NULL;
 
   int64_t color_filter_;
   int64_t pixel_size_;
   int64_t payload_size_;
 
-  u_char *RGB_image_buf_;
-  u_char *image_buf_;
+  int64_t sensor_width_ = 0;
+  int64_t sensor_height_ = 0;
+
+  u_char *RGB_image_buf_ = NULL;
+  u_char *image_buf_ = NULL;
 
   std::chrono::time_point<std::chrono::steady_clock> frame_time_;
 
   uint16_t frame_count_;
+
+  // ---- reinit / health-check state ----
+  bool lib_initialised_ = false;
+  bool streaming_ = false;
+  std::atomic<bool> reinit_in_progress_{false};
+  // set by the SDK offline callback - means the device dropped off the bus
+  std::atomic<bool> device_offline_{false};
+  GX_EVENT_CALLBACK_HANDLE offline_cb_handle_ = NULL;
+  int unhealthy_window_count_ = 0;
+
+  // open the single daheng camera by index (original behaviour, unchanged)
+  CAMERA_LOCAL
+  GX_STATUS open_device() {
+    GX_OPEN_PARAM gx_open_param;
+    gx_open_param.accessMode = GX_ACCESS_EXCLUSIVE;
+    gx_open_param.openMode = GX_OPEN_INDEX;
+    gx_open_param.pszContent = const_cast<char*>("1");
+    return GXOpenDevice(&gx_open_param, &this->gx_dev_handle_);
+  }
+
+  // static trampoline for the SDK offline callback
+  static void GX_STDC on_device_offline(void *user_param) {
+    auto *self = reinterpret_cast<U3vImagePub*>(user_param);
+    if (self != nullptr) {
+      self->device_offline_.store(true);
+    }
+  }
+
+  CAMERA_LOCAL
+  void register_offline_callback() {
+    if (gx_dev_handle_ == NULL) return;
+    GX_STATUS status = GXRegisterDeviceOfflineCallback(
+        gx_dev_handle_, this, &U3vImagePub::on_device_offline, &offline_cb_handle_);
+    if (status != GX_STATUS_SUCCESS) {
+      RCLCPP_WARN(get_logger(), "could not register device offline callback: %s",
+                  GetErrorString(status));
+      offline_cb_handle_ = NULL;
+    }
+  }
+
+  CAMERA_LOCAL
+  void unregister_offline_callback() {
+    if (gx_dev_handle_ != NULL && offline_cb_handle_ != NULL) {
+      GXUnregisterDeviceOfflineCallback(gx_dev_handle_, offline_cb_handle_);
+      offline_cb_handle_ = NULL;
+    }
+  }
 
   CAMERA_LOCAL
   void update_payload_size() {
@@ -327,7 +401,8 @@ private:
     if (status != GX_STATUS_SUCCESS) {
       auto error_msg = GetErrorString(status);
       RCLCPP_ERROR(get_logger(), "error getting payload_size_: %s", error_msg);
-      exit (-9);
+      // do not exit here - during reinit a transient failure should not kill the node
+      return;
     }
 
     RCLCPP_INFO(get_logger(),"payload_size_: %ld", payload_size_);
@@ -550,9 +625,71 @@ private:
     return result;
   }
 
+  // push the current ROS parameter values back onto the camera. Used both at
+  // startup (implicitly via the param_timer) and explicitly after a reinit so
+  // the freshly reopened device gets the right configuration immediately.
+  CAMERA_LOCAL
+  void reapply_camera_settings() {
+    if (gx_dev_handle_ == NULL) return;
+
+    auto set_enum = [&](const std::string &name, GX_FEATURE_ID_CMD id) {
+      if (this->has_parameter(name))
+        param_gx_set_enum(id, this->get_parameter(name).as_int());
+    };
+    auto set_int = [&](const std::string &name, GX_FEATURE_ID_CMD id) {
+      if (this->has_parameter(name))
+        param_gx_set_int(id, this->get_parameter(name).as_int());
+    };
+    auto set_float = [&](const std::string &name, GX_FEATURE_ID_CMD id) {
+      if (this->has_parameter(name))
+        param_gx_set_float(id, this->get_parameter(name).as_double());
+    };
+
+    set_enum("pixel_format", GX_ENUM_PIXEL_FORMAT);
+    update_payload_size();
+
+    set_enum("acquisition_mode", GX_ENUM_ACQUISITION_MODE);
+    set_enum("trigger_mode", GX_ENUM_TRIGGER_MODE);
+    if (this->has_parameter("trigger_source"))
+      set_enum("trigger_source", GX_ENUM_TRIGGER_SOURCE);
+    if (this->has_parameter("line_selector"))
+      set_enum("line_selector", GX_ENUM_LINE_SELECTOR);
+    if (this->has_parameter("line_mode"))
+      set_enum("line_mode", GX_ENUM_LINE_MODE);
+    if (this->has_parameter("line_source"))
+      set_enum("line_source", GX_ENUM_LINE_SOURCE);
+
+    set_enum("exposure_mode", GX_ENUM_EXPOSURE_MODE);
+    set_enum("exposure_auto", GX_ENUM_EXPOSURE_AUTO);
+    set_float("auto_exposure_time_min", GX_FLOAT_AUTO_EXPOSURE_TIME_MIN);
+    set_float("auto_exposure_time_max", GX_FLOAT_AUTO_EXPOSURE_TIME_MAX);
+    set_int("expected_gray_value", GX_INT_GRAY_VALUE);
+
+    set_enum("gain_auto", GX_ENUM_GAIN_AUTO);
+    set_float("auto_gain_min", GX_FLOAT_AUTO_GAIN_MIN);
+    set_float("auto_gain_max", GX_FLOAT_AUTO_GAIN_MAX);
+
+    set_enum("balance_ratio_selector", GX_ENUM_BALANCE_RATIO_SELECTOR);
+    set_enum("balance_white_auto", GX_ENUM_BALANCE_WHITE_AUTO);
+
+    set_int("awb_roi_width", GX_INT_AWBROI_WIDTH);
+    set_int("awb_roi_height", GX_INT_AWBROI_HEIGHT);
+
+    if (this->has_parameter("gamma_enable"))
+      GXSetBool(gx_dev_handle_, GX_BOOL_GAMMA_ENABLE, this->get_parameter("gamma_enable").as_bool());
+    set_enum("gamma_mode", GX_ENUM_GAMMA_MODE);
+
+    set_enum("acquisition_frame_rate_mode", GX_ENUM_ACQUISITION_FRAME_RATE_MODE);
+    set_float("acquisition_frame_rate", GX_FLOAT_ACQUISITION_FRAME_RATE);
+  }
+
   CAMERA_LOCAL
   void param_timer_callback(){
     RCLCPP_INFO_ONCE(get_logger(),"first param_timer_callback ...");
+    // skip touching the device while a reinit is underway or the handle is gone
+    if (reinit_in_progress_.load() || gx_dev_handle_ == NULL) {
+      return;
+    }
     update_changed_enum_param("acquisition_mode", GX_ENUM_ACQUISITION_MODE);
     update_changed_enum_param("trigger_mode", GX_ENUM_TRIGGER_MODE);
     update_changed_enum_param("exposure_mode", GX_ENUM_EXPOSURE_MODE);
@@ -648,6 +785,10 @@ private:
     }
   }
 
+  // Runs every 1 second. Computes the achieved fps over the last window and
+  // uses it as a health signal. Because successful frames keep the rate up,
+  // the normal timeout/success churn (status -14 then 0) does not trip this -
+  // only a genuine stall (camera disconnected => stays at -14) drives fps to 0.
   CAMERA_LOCAL
   void frame_timer_callback() {
     auto end_time = std::chrono::steady_clock::now();
@@ -656,9 +797,156 @@ private:
     auto frame_time = frame_time_;
     frame_time_=end_time;
 
-    auto fps = frame_count/(std::chrono::duration_cast<std::chrono::milliseconds>(end_time-frame_time).count()/1000.0);
+    auto elapsed_s = std::chrono::duration_cast<std::chrono::milliseconds>(end_time-frame_time).count()/1000.0;
+    auto fps = (elapsed_s > 0.0) ? (frame_count/elapsed_s) : 0.0;
 
     RCLCPP_DEBUG(this->get_logger(), "fps: %f", fps);
+
+    // ---- health check ----
+    // don't evaluate health while still initialising or already recovering
+    if (is_initialising_ || reinit_in_progress_.load()) {
+      return;
+    }
+
+    // fast path: the SDK told us the device went offline
+    if (device_offline_.load()) {
+      RCLCPP_ERROR(get_logger(), "%s device reported OFFLINE - reinitialising", topic_.c_str());
+      trigger_reinit();
+      return;
+    }
+
+    // expected rate from the configured acquisition_frame_rate parameter
+    double configured_fps = 0.0;
+    if (this->has_parameter("acquisition_frame_rate")) {
+      configured_fps = this->get_parameter("acquisition_frame_rate").as_double();
+    }
+    double min_healthy_fps = this->get_parameter("min_healthy_fps").as_double();
+    int unhealthy_limit = static_cast<int>(this->get_parameter("unhealthy_windows_before_reinit").as_int());
+
+    // only police fps if the camera is actually supposed to be streaming
+    // continuously (in trigger mode there may legitimately be no frames)
+    bool continuous = !trigger_mode();
+
+    if (continuous && configured_fps > 0.0 && fps < min_healthy_fps) {
+      unhealthy_window_count_++;
+      RCLCPP_WARN(get_logger(),
+        "%s low fps: measured %.2f < threshold %.2f (configured %.2f) [%d/%d]",
+        topic_.c_str(), fps, min_healthy_fps, configured_fps,
+        unhealthy_window_count_, unhealthy_limit);
+
+      if (unhealthy_window_count_ >= unhealthy_limit) {
+        RCLCPP_ERROR(get_logger(),
+          "%s fps below %.2f for %d windows - reinitialising camera",
+          topic_.c_str(), min_healthy_fps, unhealthy_window_count_);
+        trigger_reinit();
+      }
+    } else {
+      // healthy window resets the counter
+      unhealthy_window_count_ = 0;
+    }
+  }
+
+  // schedule the reinit on a dedicated callback group so it can't run
+  // re-entrantly with the capture timer and won't block other callbacks
+  CAMERA_LOCAL
+  void trigger_reinit() {
+    bool expected = false;
+    if (!reinit_in_progress_.compare_exchange_strong(expected, true)) {
+      return; // already reinitialising
+    }
+
+    // stop capturing while we rebuild the device
+    if (capture_timer_) {
+      capture_timer_->cancel();
+    }
+
+    unhealthy_window_count_ = 0;
+
+    // one-shot timer in the reinit callback group
+    reinit_timer_ = this->create_wall_timer(
+        200ms,
+        [this]() {
+          reinit_timer_->cancel();
+          do_reinit();
+        },
+        callback_group_reinit_);
+  }
+
+  CAMERA_LOCAL
+  void do_reinit() {
+    RCLCPP_WARN(get_logger(), "reinitialising camera %s ...", device_sn_.c_str());
+
+    // 1. tear down the current handle (ignore errors - device may be gone)
+    unregister_offline_callback();
+    if (gx_dev_handle_ != NULL) {
+      if (streaming_) {
+        GXStreamOff(gx_dev_handle_);
+        streaming_ = false;
+      }
+      GXCloseDevice(gx_dev_handle_);
+      gx_dev_handle_ = NULL;
+    }
+    device_offline_.store(false);
+
+    // 2. refresh device list and reopen (by index, single camera)
+    GX_STATUS status = GX_STATUS_ERROR;
+    for (int attempt = 0; attempt < 1000 && rclcpp::ok(); ++attempt) {
+      uint32_t num_devices = 0;
+      GXUpdateDeviceList(&num_devices, 1000);
+      if (num_devices > 0) {
+        status = open_device();
+        if (status == GX_STATUS_SUCCESS) {
+          break;
+        }
+        RCLCPP_WARN(get_logger(), "reopen attempt %d failed: %s",
+                    attempt, GetErrorString(status));
+      } else {
+        RCLCPP_WARN(get_logger(), "reopen attempt %d - no devices found yet", attempt);
+      }
+      std::this_thread::sleep_for(500ms);
+    }
+
+    if (status != GX_STATUS_SUCCESS || gx_dev_handle_ == NULL) {
+      RCLCPP_ERROR(get_logger(), "could not reopen %s - retrying shortly", device_sn_.c_str());
+      reinit_timer_ = this->create_wall_timer(
+          2s,
+          [this]() { reinit_timer_->cancel(); do_reinit(); },
+          callback_group_reinit_);
+      return;
+    }
+
+    // 3. refresh derived values and reapply all settings
+    GXGetEnum(gx_dev_handle_, GX_ENUM_PIXEL_COLOR_FILTER, &color_filter_);
+    GXGetEnum(gx_dev_handle_, GX_ENUM_PIXEL_SIZE, &pixel_size_);
+    reapply_camera_settings();
+
+    // 4. re-register offline callback on the new handle
+    register_offline_callback();
+
+    // 5. restart the stream
+    status = GXStreamOn(gx_dev_handle_);
+    if (status != GX_STATUS_SUCCESS) {
+      RCLCPP_ERROR(get_logger(), "GXStreamOn failed after reinit: %s", GetErrorString(status));
+      unregister_offline_callback();
+      GXCloseDevice(gx_dev_handle_);
+      gx_dev_handle_ = NULL;
+      reinit_timer_ = this->create_wall_timer(
+          2s,
+          [this]() { reinit_timer_->cancel(); do_reinit(); },
+          callback_group_reinit_);
+      return;
+    }
+    streaming_ = true;
+
+    // 6. resume normal operation
+    frame_count_ = 0;
+    frame_time_ = std::chrono::steady_clock::now();
+    unhealthy_window_count_ = 0;
+    reinit_in_progress_.store(false);
+    if (capture_timer_) {
+      capture_timer_->reset();
+    }
+    RCLCPP_INFO(get_logger(), "camera %s reinitialised successfully", device_sn_.c_str());
   }
 
   // CAMERA_LOCAL
@@ -696,6 +984,11 @@ private:
       return;
     }
 
+    // don't trigger while reinitialising or with a dead handle
+    if (reinit_in_progress_.load() || gx_dev_handle_ == NULL) {
+      return;
+    }
+
     // if it was started in continuous and we receive capture trigger message enable it
     if (!trigger_mode()) {
       set_parameter(rclcpp::Parameter("trigger_mode", GX_TRIGGER_MODE_ON));
@@ -719,6 +1012,10 @@ private:
   CAMERA_LOCAL
   void capture_timer_callback() {
     RCLCPP_INFO_ONCE(this->get_logger(),"capture_timer_callback started on thread: %s", string_thread_id().c_str());
+    // skip if we're rebuilding the device or it's gone
+    if (reinit_in_progress_.load() || gx_dev_handle_ == NULL) {
+      return;
+    }
     trigger_timestamp_ = rclcpp::Clock().now();
     this->capture_device(topic_, gx_dev_handle_, RGB_image_buf_, image_buf_, color_filter_, payload_size_);
   }
@@ -732,15 +1029,23 @@ private:
 
     status = GXDQBuf(gx_dev_handle, &frame_buffer, 25);
     if (status == GX_STATUS_TIMEOUT) {
+      // status -14: normal between frames at low fps. A sustained run of these
+      // (camera disconnected) shows up as fps -> 0 in frame_timer_callback,
+      // which triggers the reinit. So nothing to do here but return.
       RCLCPP_DEBUG(get_logger(), "%s timeout handle %p capture", topic.c_str(), gx_dev_handle);
       return;
     } else  if (status != GX_STATUS_SUCCESS) {
+      // a hard (non-timeout) error almost always means the device is gone -
+      // flag offline so the health check reinitialises promptly
       auto error_msg = GetErrorString(status);
       RCLCPP_ERROR(this->get_logger(), "%s error GXDQBuf: %s", topic.c_str(), error_msg);
+      device_offline_.store(true);
       return;
     }
 
     if (frame_buffer->nStatus != GX_FRAME_STATUS_SUCCESS) {
+      // incomplete / invalid frame - link is still alive, just a bad frame.
+      // Don't count it as a frame and don't requeue it as published.
       RCLCPP_WARN(get_logger(),"%s abnormal camera acquisition - code: %d", topic.c_str(), frame_buffer->nStatus);
     } else if (frame_buffer->nPixelFormat != GX_PIXEL_FORMAT_BAYER_RG8 && frame_buffer->nPixelFormat != GX_PIXEL_FORMAT_BAYER_RG10) {
       RCLCPP_ERROR(get_logger(),"%s unknown pixel format %d", topic.c_str(), frame_buffer->nPixelFormat);
@@ -813,6 +1118,8 @@ private:
         memcpy(&msg->data[0],frame_buffer->pImgBuf,msg_size);
       } else {
         RCLCPP_ERROR(this->get_logger(), "%s invalid encoding. Not publishing image!", image_encoding_.c_str());
+        // requeue before returning so we don't leak the buffer
+        GXQBuf(gx_dev_handle, frame_buffer);
         return;
       }
       frame_count_++;

@@ -27,6 +27,7 @@ def generate_launch_description():
         name="front_camera_pub",
         namespace=PythonExpression(expression=["'", namespace, "'", " + '/cam_front'"]),
         parameters=camera_params,
+        respawn=True,
     )
 
     return launch.LaunchDescription([declare_namespace_cmd, front_camera_node])
