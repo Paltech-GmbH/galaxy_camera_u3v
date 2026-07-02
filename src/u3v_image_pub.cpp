@@ -22,6 +22,10 @@
 #include "cv_bridge/cv_bridge.h"
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
+#include <filesystem>
+#include <iomanip>
+#include <sstream>
+#include <opencv2/imgcodecs/imgcodecs.hpp>
 
 using namespace std::chrono_literals;
 
@@ -223,7 +227,8 @@ public:
     this->declare_parameter<int64_t>("acquisition_frame_rate_mode",GX_ACQUISITION_FRAME_RATE_MODE_ON);
     // this->declare_parameter<double_t>("acquisition_frame_rate", 56.0);
     this->declare_parameter<double_t>("acquisition_frame_rate", 10.0);
-
+    save_image_ = this->declare_parameter<bool>("save_image", false);
+    save_image_path_ = this->declare_parameter<std::string>("save_image_path", "log/external_camera_images");
 
     status = GXStreamOn(gx_dev_handle_);
     if (status != GX_STATUS_SUCCESS) {
@@ -298,7 +303,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_info_;
 
   std::string topic_;
-
+  bool save_image_;
+  std::string save_image_path_;
   std::string camera_info_url_;
   camera_info_manager::CameraInfo camera_info_;
 
@@ -480,6 +486,18 @@ private:
       //     parameter.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
       //     result = param_gx_set_int(GX_INT_AWBROI_OFFSETY, parameter.as_int());
       // }
+      else if (parameter.get_name() == "save_image" &&
+          parameter.get_type() == rclcpp::ParameterType::PARAMETER_BOOL)
+      {
+          save_image_ = parameter.as_bool();
+          RCLCPP_INFO(get_logger(), "save_image: %s", save_image_ ? "true" : "false");
+      }
+      else if (parameter.get_name() == "save_image_path" &&
+              parameter.get_type() == rclcpp::ParameterType::PARAMETER_STRING)
+      {
+          save_image_path_ = parameter.as_string();
+          RCLCPP_INFO(get_logger(), "save_image_path: %s", save_image_path_.c_str());
+      }
 
       if (!result.successful) {
         RCLCPP_WARN(this->get_logger(), "parameter %s not set - %s",parameter.get_name().c_str(), result.reason.c_str());
@@ -815,6 +833,7 @@ private:
         RCLCPP_ERROR(this->get_logger(), "%s invalid encoding. Not publishing image!", image_encoding_.c_str());
         return;
       }
+      save_image(*msg, timestamp_stream.str());
       frame_count_++;
       pub_->publish(*std::move(msg));
       pub_info_->publish(camera_info_);
@@ -826,6 +845,87 @@ private:
       RCLCPP_ERROR(this->get_logger(), "%s error GXQBuf: %s", topic.c_str(), error_msg);
     }
   }
+
+  void save_image(
+      const sensor_msgs::msg::Image & msg,
+      const std::string & timestamp)
+  {
+    if (!save_image_)
+    {
+      return;
+    }
+
+    try
+    {
+      // Create output directory if it doesn't exist
+      std::filesystem::create_directories(save_image_path_);
+
+      cv::Mat image;
+
+      if (msg.encoding == sensor_msgs::image_encodings::BGR8)
+      {
+        image = cv::Mat(
+            msg.height,
+            msg.width,
+            CV_8UC3,
+            const_cast<uint8_t *>(msg.data.data()));
+      }
+      else if (msg.encoding == sensor_msgs::image_encodings::RGB8)
+      {
+        cv::Mat rgb(
+            msg.height,
+            msg.width,
+            CV_8UC3,
+            const_cast<uint8_t *>(msg.data.data()));
+
+        cv::cvtColor(rgb, image, cv::COLOR_RGB2BGR);
+      }
+      else if (msg.encoding == sensor_msgs::image_encodings::BAYER_RGGB8)
+      {
+        cv::Mat raw(
+            msg.height,
+            msg.width,
+            CV_8UC1,
+            const_cast<uint8_t *>(msg.data.data()));
+
+        cv::cvtColor(raw, image, cv::COLOR_BayerRG2BGR);
+      }
+      else
+      {
+        RCLCPP_WARN(
+            get_logger(),
+            "Saving images is not supported for encoding '%s'",
+            msg.encoding.c_str());
+        return;
+      }
+
+      const std::string filename =
+          save_image_path_ + "/" + timestamp + ".png";
+
+      if (cv::imwrite(filename, image))
+        {
+          RCLCPP_INFO(
+              get_logger(),
+              "Saved image to '%s'",
+              filename.c_str());
+        }
+        else
+        {
+          RCLCPP_WARN(
+              get_logger(),
+              "Failed to write image '%s'",
+              filename.c_str());
+        }
+    }
+    catch (const std::exception & e)
+    {
+      RCLCPP_ERROR(
+          get_logger(),
+          "Failed to save image: %s",
+          e.what());
+    }
+  }
+
 };
 } // end namespace camera
 

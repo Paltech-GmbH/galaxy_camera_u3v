@@ -10,6 +10,8 @@
       balance_ratio: 1.7891
       acquisition_frame_rate: 30.0
       topic: right            # For debugging msgs
+      save_image: False
+      save_image_path: log/external_camera_images_front_right
 
 /nuga/front_left/sensors/camera:
   galaxy_camera_pub:
@@ -23,3 +25,5 @@
       balance_ratio: 1.7344
       acquisition_frame_rate: 30.0
       topic: left             # For debugging msgs
+      save_image: False
+      save_image_path: log/external_camera_images_front_left
