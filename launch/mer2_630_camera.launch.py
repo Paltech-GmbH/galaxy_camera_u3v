@@ -2,11 +2,8 @@
 
 import os
 import launch
-from launch_ros.actions import ComposableNodeContainer
-from launch_ros.actions import LoadComposableNodes
-from launch_ros.descriptions import ComposableNode
-from launch.substitutions import LaunchConfiguration, PythonExpression
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -34,6 +31,7 @@ def generate_launch_description():
         name="galaxy_camera_pub",
         namespace="/nuga/front_left/sensors/camera",
         parameters=[params],
+        respawn=True,
     )
 
     right_camera_node = Node(
@@ -42,6 +40,7 @@ def generate_launch_description():
         name="galaxy_camera_pub",
         namespace="/nuga/front_right/sensors/camera",
         parameters=[params],
+        respawn=True,
     )
 
     return launch.LaunchDescription(

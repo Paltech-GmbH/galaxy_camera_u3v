@@ -243,6 +243,10 @@ public:
     // publishers
     pub_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw", sensor_qos);
     pub_info_ = this->create_publisher<sensor_msgs::msg::CameraInfo>("camera_info", 10);
+    // resized stream for web_video_server
+    rclcpp::QoS resized_qos(rclcpp::KeepLast(5));
+    resized_qos.best_effort();
+    pub_resized_ = this->create_publisher<sensor_msgs::msg::Image>("image_raw/resized_stream", resized_qos);
 
     // initialise are start the timer to work out the frames per second)
     auto start_time = std::chrono::steady_clock::now();
@@ -300,6 +304,7 @@ private:
 
   // ros2 camera
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_resized_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_info_;
 
   std::string topic_;
@@ -834,6 +839,7 @@ private:
         return;
       }
       save_image(*msg, timestamp_stream.str());
+      publish_resized_image(*msg);
       frame_count_++;
       pub_->publish(*std::move(msg));
       pub_info_->publish(camera_info_);
@@ -843,6 +849,29 @@ private:
     if (status != GX_STATUS_SUCCESS) {
       auto error_msg = GetErrorString(status);
       RCLCPP_ERROR(this->get_logger(), "%s error GXQBuf: %s", topic.c_str(), error_msg);
+    }
+  }
+
+  CAMERA_LOCAL
+  void publish_resized_image(const sensor_msgs::msg::Image & msg) {
+    if (pub_resized_->get_subscription_count() == 0) {
+      return;  // skip the work if nobody's watching the stream
+    }
+
+    try {
+      cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+
+      cv::Mat resized;
+      cv::resize(cv_ptr->image, resized, cv::Size(360, 360), 0, 0, cv::INTER_AREA);
+
+      cv_bridge::CvImage out_msg;
+      out_msg.header = msg.header;
+      out_msg.encoding = sensor_msgs::image_encodings::BGR8;
+      out_msg.image = resized;
+
+      pub_resized_->publish(*out_msg.toImageMsg());
+    } catch (const cv_bridge::Exception & e) {
+      RCLCPP_ERROR(get_logger(), "cv_bridge exception in publish_resized_image: %s", e.what());
     }
   }
 
