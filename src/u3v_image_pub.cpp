@@ -862,7 +862,7 @@ private:
       cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
 
       cv::Mat resized;
-      cv::resize(cv_ptr->image, resized, cv::Size(360, 360), 0, 0, cv::INTER_AREA);
+      cv::resize(cv_ptr->image, resized, cv::Size(640, 360), 0, 0, cv::INTER_AREA);
 
       cv_bridge::CvImage out_msg;
       out_msg.header = msg.header;
