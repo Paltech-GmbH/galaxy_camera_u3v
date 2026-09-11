@@ -15,6 +15,7 @@
 #include "sensor_msgs/image_encodings.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 #include <opencv2/core.hpp>
 #include <image_transport/image_transport.hpp>
@@ -272,6 +273,16 @@ public:
 
 
     capture_trigger_sub_ = this->create_subscription<sensor_msgs::msg::TimeReference>("/capture_trigger", qos, std::bind(&U3vImagePub::capture_trigger_callback, this, std::placeholders::_1));
+
+    // Named to match depthai_ros_driver's ~/start_camera and ~/stop_camera so
+    // deep sleep can drive every camera through the same pair of calls.
+    stop_camera_srv_ = this->create_service<std_srvs::srv::Trigger>(
+        "~/stop_camera",
+        std::bind(&U3vImagePub::stop_camera_cb, this, std::placeholders::_1, std::placeholders::_2));
+    start_camera_srv_ = this->create_service<std_srvs::srv::Trigger>(
+        "~/start_camera",
+        std::bind(&U3vImagePub::start_camera_cb, this, std::placeholders::_1, std::placeholders::_2));
+
     is_initialising_ = false;
   }
 
@@ -352,6 +363,12 @@ private:
   bool lib_initialised_ = false;
   bool streaming_ = false;
   std::atomic<bool> reinit_in_progress_{false};
+  /// Set while the camera is deliberately stopped (deep sleep). Distinct from
+  /// streaming_: it tells the health check that zero fps is expected, so it
+  /// does not "recover" the camera we just switched off.
+  std::atomic<bool> stopped_on_request_{false};
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_camera_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_camera_srv_;
   // set by the SDK offline callback - means the device dropped off the bus
   std::atomic<bool> device_offline_{false};
   GX_EVENT_CALLBACK_HANDLE offline_cb_handle_ = NULL;
@@ -686,8 +703,9 @@ private:
   CAMERA_LOCAL
   void param_timer_callback(){
     RCLCPP_INFO_ONCE(get_logger(),"first param_timer_callback ...");
-    // skip touching the device while a reinit is underway or the handle is gone
-    if (reinit_in_progress_.load() || gx_dev_handle_ == NULL) {
+    // skip touching the device while a reinit is underway, the handle is gone,
+    // or acquisition is deliberately stopped
+    if (reinit_in_progress_.load() || gx_dev_handle_ == NULL || stopped_on_request_.load()) {
       return;
     }
     update_changed_enum_param("acquisition_mode", GX_ENUM_ACQUISITION_MODE);
@@ -803,8 +821,10 @@ private:
     RCLCPP_DEBUG(this->get_logger(), "fps: %f", fps);
 
     // ---- health check ----
-    // don't evaluate health while still initialising or already recovering
-    if (is_initialising_ || reinit_in_progress_.load()) {
+    // don't evaluate health while still initialising or already recovering,
+    // nor while the camera is deliberately stopped -- zero fps is the point.
+    if (is_initialising_ || reinit_in_progress_.load() || stopped_on_request_.load()) {
+      unhealthy_window_count_ = 0;
       return;
     }
 
@@ -844,6 +864,75 @@ private:
       // healthy window resets the counter
       unhealthy_window_count_ = 0;
     }
+  }
+
+  CAMERA_LOCAL
+  void stop_camera_cb(const std_srvs::srv::Trigger::Request::SharedPtr,
+                      std_srvs::srv::Trigger::Response::SharedPtr res) {
+    if (stopped_on_request_.load()) {
+      res->success = true;
+      res->message = "already stopped";
+      return;
+    }
+    if (reinit_in_progress_.load()) {
+      res->success = false;
+      res->message = "reinitialising - try again shortly";
+      return;
+    }
+    // Set this first: it is what stops the health check from reinitialising
+    // the camera when the fps it is about to see drops to zero.
+    stopped_on_request_.store(true);
+    if (capture_timer_) {
+      capture_timer_->cancel();
+    }
+    if (gx_dev_handle_ != NULL && streaming_) {
+      GXStreamOff(gx_dev_handle_);
+      streaming_ = false;
+    }
+    RCLCPP_INFO(get_logger(), "%s acquisition stopped on request", topic_.c_str());
+    res->success = true;
+    res->message = "acquisition stopped";
+  }
+
+  CAMERA_LOCAL
+  void start_camera_cb(const std_srvs::srv::Trigger::Request::SharedPtr,
+                       std_srvs::srv::Trigger::Response::SharedPtr res) {
+    if (!stopped_on_request_.load()) {
+      res->success = true;
+      res->message = "already running";
+      return;
+    }
+    if (gx_dev_handle_ == NULL) {
+      // The device went away while we were stopped; the reinit path owns
+      // recovery, so hand it over rather than duplicating the reopen logic.
+      stopped_on_request_.store(false);
+      trigger_reinit();
+      res->success = false;
+      res->message = "device handle gone - reinitialising";
+      return;
+    }
+    GX_STATUS status = GXStreamOn(gx_dev_handle_);
+    if (status != GX_STATUS_SUCCESS) {
+      RCLCPP_ERROR(get_logger(), "GXStreamOn failed on start_camera: %s", GetErrorString(status));
+      stopped_on_request_.store(false);
+      trigger_reinit();
+      res->success = false;
+      res->message = "stream on failed - reinitialising";
+      return;
+    }
+    streaming_ = true;
+    // Give the health check a clean window rather than judging the camera on
+    // the seconds it spent switched off.
+    frame_count_ = 0;
+    frame_time_ = std::chrono::steady_clock::now();
+    unhealthy_window_count_ = 0;
+    stopped_on_request_.store(false);
+    if (capture_timer_) {
+      capture_timer_->reset();
+    }
+    RCLCPP_INFO(get_logger(), "%s acquisition started on request", topic_.c_str());
+    res->success = true;
+    res->message = "acquisition started";
   }
 
   // schedule the reinit on a dedicated callback group so it can't run

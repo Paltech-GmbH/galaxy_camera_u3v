@@ -26,6 +26,7 @@ find_package(camera_info_manager REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 include_directories(include SYSTEM)
 
@@ -46,6 +47,7 @@ ament_target_dependencies(camera_components
   rclcpp
   rclcpp_components
   sensor_msgs
+  std_srvs
   image_transport
   camera_info_manager
   std_msgs
