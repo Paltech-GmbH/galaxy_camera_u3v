@@ -17,6 +17,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -73,7 +74,7 @@ install(TARGETS
   RUNTIME DESTINATION bin)
 
 install(
-  DIRECTORY launch camera_info params
+  DIRECTORY launch camera_info params stress_test
   DESTINATION share/${PROJECT_NAME}
 )
 

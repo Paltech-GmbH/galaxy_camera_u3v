@@ -31,7 +31,7 @@ def generate_launch_description():
         name="galaxy_camera_pub",
         namespace="/nuga/front_left/sensors/camera",
         parameters=[params],
-        respawn=True,
+        # respawn=True,
     )
 
     right_camera_node = Node(
@@ -40,7 +40,7 @@ def generate_launch_description():
         name="galaxy_camera_pub",
         namespace="/nuga/front_right/sensors/camera",
         parameters=[params],
-        respawn=True,
+        # respawn=True,
     )
 
     return launch.LaunchDescription(

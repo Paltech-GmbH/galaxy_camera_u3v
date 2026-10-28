@@ -16,7 +16,7 @@
 /nuga/front_left/sensors/camera:
   galaxy_camera_pub:
     ros__parameters:
-      device_sn: FCQ24082069
+      device_sn: FCQ25061420
       exposure_auto: 1        # GX_EXPOSURE_AUTO_OFF = 0
       exposure_time: 25000.0
       gain_auto: 1            # GX_GAIN_AUTO_OFF = 0
