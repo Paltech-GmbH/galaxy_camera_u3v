@@ -259,7 +259,7 @@ public:
     param_timer_ = this->create_wall_timer(1s, std::bind(&U3vImagePub::param_timer_callback, this));
 
     callback_group_capture_timer_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-    capture_timer_ = this->create_wall_timer(10ms, std::bind(&U3vImagePub::capture_timer_callback, this), callback_group_capture_timer_);
+    capture_timer_ = this->create_wall_timer(500ms, std::bind(&U3vImagePub::capture_timer_callback, this), callback_group_capture_timer_);
 
     // just use for testing - trigger should come from the controller
     // auto frame_duration = 1000000us/FRAME_RATE;

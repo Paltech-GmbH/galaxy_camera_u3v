@@ -8,7 +8,7 @@
       gain: 15.0
       balance_white_auto: 1   # GX_BALANCE_WHITE_AUTO_OFF = 0
       balance_ratio: 1.7891
-      acquisition_frame_rate: 30.0
+      acquisition_frame_rate: 2.0
       topic: right            # For debugging msgs
       save_image: False
       save_image_path: log/external_camera_images_front_right
@@ -23,7 +23,7 @@
       gain: 24.0
       balance_white_auto: 1   # GX_BALANCE_WHITE_AUTO_OFF = 0
       balance_ratio: 1.7344
-      acquisition_frame_rate: 30.0
+      acquisition_frame_rate: 2.0
       topic: left             # For debugging msgs
       save_image: False
       save_image_path: log/external_camera_images_front_left
